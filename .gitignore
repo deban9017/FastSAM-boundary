@@ -9,6 +9,5 @@ train_masks/
 val_masks/
 dat_patch/
 
-# large / generated folders
-FastSmoothSam/
+
 
