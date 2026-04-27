@@ -1,0 +1,11 @@
+./FastSAM-s.pt
+./FastSAM-x.pt
+*.pt
+
+./test/
+./train/
+./val/
+./train_masks/
+./val_masks/
+./dat_patch/
+
