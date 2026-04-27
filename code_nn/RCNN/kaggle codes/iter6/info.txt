@@ -1,0 +1,24 @@
+========================================================================
+Experiment Log: Dual-Stage Cascaded Boundary Refiner (Pull & Smooth)
+========================================================================
+
+Problem Statement:
+Earlier single-stage iterations struggled with conflicting objectives. When forced to both find the true edge and smooth it simultaneously, the loss functions clashed. Total Variation (TV) loss forced false-positive blobs into stubborn circles (minimizing perimeter), while Local Density loss favored straight, blocky edges over natural curves. 
+
+Architectural Solution: Two-Stage Cascaded Pipeline
+To resolve the conflicting gradients, the refinement task was split into two specialized, lightweight neural networks trained sequentially.
+
+--- STAGE 1: The Boundary Puller ---
+* Architecture: Deep but narrow ResNet (only 192kb). Uses dilated convolutions (dilation=1, 2, 4) to expand the receptive field without blowing up GPU memory.
+* Loss Function: Soft Boundary BCE Loss. A Gaussian blur (kernel=31) is applied to the Ground Truth boundary to heavily penalize errors exactly on the edge, while ignoring deep background pixels. 
+* Objective: Look at the raw RGB gradients and aggressively pull the FastSAM mask to the true physical boundary. 
+* Result: Successfully ignored floating FastSAM artifacts. It even outperformed the human-annotated Ground Truth by snapping to actual image gradients rather than lazy, straight-line human annotations.
+
+--- STAGE 2: The Boundary Smoother ---
+* Architecture: Shallow, simple CNN (3 conv layers). 
+* Input: Takes the RGB image patch + the thresholded, hard binary mask output from Stage 1.
+* Loss Function: BCE + Total Variation (TV) Loss. 
+* Objective: Act as a local "iron." Since Stage 1 already secured the correct geometric shape, Stage 2's TV loss safely irons out the jagged, staircase gridding effects caused by pixelated convolutions, without accidentally rounding out the overall object.
+
+Conclusion:
+The cascaded approach successfully decoupled boundary localization from edge smoothing. The combined pipeline runs in milliseconds, takes up practically zero VRAM, completely removes isolated noise patches, and generates smooth, highly accurate segmentation curves that visually surpass the original dataset's Ground Truth quality.
