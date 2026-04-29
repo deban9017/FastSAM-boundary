@@ -15,5 +15,6 @@ rejected_patches_plots/
 val_old/
 val_masks_old/
 test_masks/
+rejected_test_patches/
 
 
