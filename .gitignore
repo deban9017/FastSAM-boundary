@@ -12,6 +12,8 @@ dat/
 HQSeg_res/
 dis5k_plots/
 rejected_patches_plots/
+val_old/
+val_masks_old/
 
 
 
