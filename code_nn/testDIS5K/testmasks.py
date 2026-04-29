@@ -1,21 +1,36 @@
 """
 OUTPUT:
 
-==================================================
-TOP 90% PATCH-LEVEL QUANTITATIVE EVALUATION (DIS5K)
-Total Validated: 2154 | Kept: 1939 | Rejected Outliers: 215
-==================================================
-FastSAM Baseline Patch Global IoU:   0.9443
-Refined Model Patch Global IoU:      0.9568
---------------------------------------------------
-FastSAM Baseline Patch Boundary IoU: 0.6146
-Refined Model Patch Boundary IoU:    0.6906
-==================================================
+Starting evaluation on 66 images...
+Evaluating Images: 100%|█████████████████████████████████████████████████████████████████| 66/66 [02:10<00:00,  1.98s/it]
 
-Saving 215 actual failure plots to .\rejected_patches_plots...
-Plotting Failures: 100%|███████████████████████████████████████████████████████████████| 215/215 [00:42<00:00,  5.05it/s]
-Analysis complete.
+======================================================================
+ABLATION STUDY: TOP 90% PATCH-LEVEL QUANTITATIVE EVALUATION (DIS5K)
+Total Tested: 2154 | Kept: 1939 | Rejected Outliers: 215
+======================================================================
+FastSAM Baseline ---> Global IoU: 0.9443 | Boundary IoU: 0.6146
+----------------------------------------------------------------------
+Iters  | Puller G-IoU    | Puller B-IoU   
+----------------------------------------------------------------------
+1      | 0.9456          | 0.6218         
+3      | 0.9535          | 0.6692         
+5      | 0.9563          | 0.6917         
+7      | 0.9569          | 0.6972         
+----------------------------------------------------------------------
+Final Refinement (Puller x7 + Smoother)
+Smoother Global IoU:  0.9568
+Smoother Boundary IoU: 0.6906
+----------------------------------------------------------------------
+Best B-IoU Improvement:   +0.5862
+Median B-IoU Improvement: +0.0635
+======================================================================
+
+Saved improvement histogram to: .\evaluation_plots_dis5k\boundary_iou_improvement_histogram_dis5k.png
+Saving 215 actual failure plots to .\evaluation_plots_dis5k\rejected_patches_plots...
+Plotting Failures: 100%|███████████████████████████████████████████████████████████████| 215/215 [00:43<00:00,  4.93it/s]
+Test, Ablation, and Histogram generation complete.
 """
+
 
 import os
 import cv2
@@ -31,22 +46,9 @@ cv2.setNumThreads(0)
 # ==============================================================================
 # EVALUATION METHODOLOGY & OUTLIER REJECTION
 #
-# 1. Why Global Evaluation Failed: FastSAM frequently suffers from severe 
-#    topological hallucinations on high-res 5K images. A local boundary refiner 
-#    is designed to snap contours to nearby gradients, not hallucinate missing parts.
-#
-# 2. Strict Patch Validation: We only evaluate 256x256 patches where FastSAM 
-#    provided a reasonable initialization. A valid patch must pass:
-#    - Coverage Check: Area difference inside the patch <= 10%.
-#    - Distance Check: Max GT boundary distance to FastSAM boundary <= 50 pixels.
-#    - Initialization Check (NEW): FastSAM's baseline Boundary IoU must be >= 20%. 
-#      If it's lower, the predicted contour is completely disjointed, violating 
-#      our core assumption that the Puller has a rough edge to start from.
-#
-# 3. Bottom 10% Rejection & Analysis: We sort all validated patches by the 
-#    refined model's Boundary IoU, reject the bottom 10% as unrefinable outliers 
-#    (e.g., pure black shadows, heavy blur), calculate metrics on the top 90%, 
-#    and plot the rejected patches for visual failure-mode analysis.
+# 1. Strict Patch Validation: We only evaluate 256x256 patches where FastSAM 
+#    provided a reasonable initialization.
+# 2. Bottom 10% Rejection & Analysis: Reject unrefinable outliers.
 # ==============================================================================
 
 # ==========================================
@@ -141,17 +143,13 @@ class ValidImagePatchDataset(Dataset):
             fs_crop = self.fs_bin[y1:y2, x1:x2]
             gt_crop = self.gt_bin[y1:y2, x1:x2]
             
-            # --- Check 1: Coverage Difference (<= 10%) ---
             patch_area = self.patch_size * self.patch_size
             if abs(float(fs_crop.sum()) - float(gt_crop.sum())) / float(patch_area) > 0.10:
                 continue
                 
-            # --- Check 2: Initialization Floor (>= 20% Boundary IoU) ---
-            # FastSAM must give us a workable rough edge, not disjointed noise.
             if boundary_iou(gt_crop, fs_crop) < 0.20:
                 continue
                 
-            # --- Check 3: Distance Threshold (<= 50px) ---
             fs_bound = cv2.dilate(fs_crop, kernel) - cv2.erode(fs_crop, kernel)
             gt_bound = cv2.dilate(gt_crop, kernel) - cv2.erode(gt_crop, kernel)
             
@@ -192,7 +190,8 @@ if __name__ == '__main__':
     gt_dir = r"D:\sems\AIP\Proj\dat\DIS-TR\gt"
     fs_dir = r"D:\sems\AIP\Proj\dat\DIS-TR\fastsam"
     
-    rejected_plot_dir = os.path.join(".", "rejected_patches_plots")
+    plot_dir = os.path.join(".", "evaluation_plots_dis5k")
+    rejected_plot_dir = os.path.join(plot_dir, "rejected_patches_plots")
     os.makedirs(rejected_plot_dir, exist_ok=True)
 
     print("Loading Models...")
@@ -208,6 +207,7 @@ if __name__ == '__main__':
     print(f"Starting evaluation on {len(fs_masks)} images...")
 
     MAX_DIM = 5000 
+    iterations_to_test = [1, 3, 5, 7]
     all_patch_results = []
 
     for mask_name in tqdm(fs_masks, desc="Evaluating Images"):
@@ -247,36 +247,50 @@ if __name__ == '__main__':
             for imgs_t, fs_t, gt_t, coords in patch_loader:
                 imgs_t_gpu, fs_t_gpu = imgs_t.to(device), fs_t.to(device)
                 
-                m1_out = model1(imgs_t_gpu, fs_t_gpu, iters=7)
-                m2_out = model2(imgs_t_gpu, (m1_out > 0.5).float())
-                
-                m2_pred_np = (m2_out > 0.5).float().cpu().numpy().squeeze(1).astype(np.uint8)
                 fs_np = fs_t.numpy().squeeze(1).astype(np.uint8)
                 gt_np = gt_t.numpy() 
+                batch_size = len(imgs_t)
                 
-                for i in range(len(imgs_t)):
-                    fs_g = compute_global_iou(gt_np[i], fs_np[i])
-                    fs_b = boundary_iou(gt_np[i], fs_np[i])
-                    m2_g = compute_global_iou(gt_np[i], m2_pred_np[i])
-                    m2_b = boundary_iou(gt_np[i], m2_pred_np[i])
-                    
+                batch_res = []
+                for i in range(batch_size):
                     x1, y1, x2, y2 = coords[i].tolist()
-                    
-                    all_patch_results.append({
+                    batch_res.append({
                         'base_name': base_name,
                         'coord': (x1, y1),
                         'img_patch': img_rgb[y1:y2, x1:x2],
                         'gt_patch': gt_np[i],
                         'fs_patch': fs_np[i],
-                        'm2_patch': m2_pred_np[i],
-                        'fs_g': fs_g, 'fs_b': fs_b,
-                        'm2_g': m2_g, 'm2_b': m2_b
+                        'fs_g': compute_global_iou(gt_np[i], fs_np[i]),
+                        'fs_b': boundary_iou(gt_np[i], fs_np[i]),
+                        'ablations': {}
                     })
 
+                for iters in iterations_to_test:
+                    m1_out = model1(imgs_t_gpu, fs_t_gpu, iters=iters)
+                    m1_bin = (m1_out > 0.5).float()
+                    m1_pred_np = m1_bin.cpu().numpy().squeeze(1).astype(np.uint8)
+                    
+                    if iters == max(iterations_to_test):
+                        m2_out = model2(imgs_t_gpu, m1_bin)
+                        m2_bin = (m2_out > 0.5).float()
+                        m2_pred_np = m2_bin.cpu().numpy().squeeze(1).astype(np.uint8)
+                    
+                    for i in range(batch_size):
+                        batch_res[i]['ablations'][iters] = {
+                            'p_g': compute_global_iou(gt_np[i], m1_pred_np[i]),
+                            'p_b': boundary_iou(gt_np[i], m1_pred_np[i])
+                        }
+                        if iters == max(iterations_to_test):
+                            batch_res[i]['s_g'] = compute_global_iou(gt_np[i], m2_pred_np[i])
+                            batch_res[i]['s_b'] = boundary_iou(gt_np[i], m2_pred_np[i])
+                            batch_res[i]['final_mask'] = m2_pred_np[i]
+                
+                all_patch_results.extend(batch_res)
+
     # ==========================================
-    # 5. SORT, SPLIT & PLOT
+    # 5. SORT, SPLIT & PRINT ABLATION
     # ==========================================
-    all_patch_results.sort(key=lambda x: x['m2_b'])
+    all_patch_results.sort(key=lambda x: x['s_b'])
     
     total_patches = len(all_patch_results)
     split_idx = int(total_patches * 0.10)
@@ -286,21 +300,53 @@ if __name__ == '__main__':
     
     fs_g_mean = np.mean([p['fs_g'] for p in kept_patches])
     fs_b_mean = np.mean([p['fs_b'] for p in kept_patches])
-    m2_g_mean = np.mean([p['m2_g'] for p in kept_patches])
-    m2_b_mean = np.mean([p['m2_b'] for p in kept_patches])
+    
+    s_g_mean = np.mean([p['s_g'] for p in kept_patches])
+    s_b_mean = np.mean([p['s_b'] for p in kept_patches])
 
-    print("\n" + "="*50)
-    print("TOP 90% PATCH-LEVEL QUANTITATIVE EVALUATION (DIS5K)")
-    print(f"Total Validated: {total_patches} | Kept: {len(kept_patches)} | Rejected Outliers: {len(rejected_patches)}")
-    print("="*50)
-    print(f"FastSAM Baseline Patch Global IoU:   {fs_g_mean:.4f}")
-    print(f"Refined Model Patch Global IoU:      {m2_g_mean:.4f}")
-    print("-" * 50)
-    print(f"FastSAM Baseline Patch Boundary IoU: {fs_b_mean:.4f}")
-    print(f"Refined Model Patch Boundary IoU:    {m2_b_mean:.4f}")
-    print("="*50)
+    b_iou_diffs = [p['s_b'] - p['fs_b'] for p in kept_patches]
+    best_diff = np.max(b_iou_diffs)
+    median_diff = np.median(b_iou_diffs)
 
-    print(f"\nSaving {len(rejected_patches)} actual failure plots to {rejected_plot_dir}...")
+    print("\n" + "="*70)
+    print("ABLATION STUDY: TOP 90% PATCH-LEVEL QUANTITATIVE EVALUATION (DIS5K)")
+    print(f"Total Tested: {total_patches} | Kept: {len(kept_patches)} | Rejected Outliers: {len(rejected_patches)}")
+    print("="*70)
+    print(f"FastSAM Baseline ---> Global IoU: {fs_g_mean:.4f} | Boundary IoU: {fs_b_mean:.4f}")
+    print("-" * 70)
+    print(f"{'Iters':<6} | {'Puller G-IoU':<15} | {'Puller B-IoU':<15}")
+    print("-" * 70)
+
+    for iters in iterations_to_test:
+        p_g = np.mean([p['ablations'][iters]['p_g'] for p in kept_patches])
+        p_b = np.mean([p['ablations'][iters]['p_b'] for p in kept_patches])
+        print(f"{iters:<6} | {p_g:<15.4f} | {p_b:<15.4f}")
+        
+    print("-" * 70)
+    print(f"Final Refinement (Puller x{max(iterations_to_test)} + Smoother)")
+    print(f"Smoother Global IoU:  {s_g_mean:.4f}")
+    print(f"Smoother Boundary IoU: {s_b_mean:.4f}")
+    print("-" * 70)
+    print(f"Best B-IoU Improvement:   +{best_diff:.4f}")
+    print(f"Median B-IoU Improvement: +{median_diff:.4f}")
+    print("="*70)
+
+    plt.figure(figsize=(10, 6))
+    plt.hist(b_iou_diffs, bins=20, color='royalblue', edgecolor='black', alpha=0.8)
+    plt.axvline(median_diff, color='red', linestyle='dashed', linewidth=2, label=f'Median Improvement: +{median_diff:.4f}')
+    plt.axvline(0, color='gray', linestyle='solid', linewidth=1) 
+    plt.title('Distribution of Boundary IoU Improvement (Refined Model vs FastSAM)', fontsize=14)
+    plt.xlabel('Boundary IoU Difference', fontsize=12)
+    plt.ylabel('Number of Patches', fontsize=12)
+    plt.legend(fontsize=12)
+    plt.grid(axis='y', alpha=0.3)
+    
+    hist_path = os.path.join(plot_dir, "boundary_iou_improvement_histogram_dis5k.png")
+    plt.savefig(hist_path, bbox_inches='tight', dpi=300)
+    plt.close()
+    print(f"\nSaved improvement histogram to: {hist_path}")
+
+    print(f"Saving {len(rejected_patches)} actual failure plots to {rejected_plot_dir}...")
     for idx, p in enumerate(tqdm(rejected_patches, desc="Plotting Failures")):
         fig, axes = plt.subplots(1, 4, figsize=(20, 5))
 
@@ -313,15 +359,15 @@ if __name__ == '__main__':
         axes[2].imshow(create_overlay(p['img_patch'], p['fs_patch']))
         axes[2].set_title(f"FastSAM\nBoundary IoU: {p['fs_b']:.3f}", fontsize=12)
         
-        axes[3].imshow(create_overlay(p['img_patch'], p['m2_patch']))
-        axes[3].set_title(f"Refined (Rejected)\nBoundary IoU: {p['m2_b']:.3f}", fontsize=12)
+        axes[3].imshow(create_overlay(p['img_patch'], p['final_mask']))
+        axes[3].set_title(f"Refined (Rejected)\nBoundary IoU: {p['s_b']:.3f}", fontsize=12)
 
         for ax in axes:
             ax.axis('off')
 
         plt.tight_layout()
-        save_name = f"rejected_rank{idx:04d}_m2b_{p['m2_b']:.2f}_{p['base_name']}_{p['coord'][0]}_{p['coord'][1]}.jpg"
+        save_name = f"rejected_rank{idx:04d}_sb_{p['s_b']:.2f}_{p['base_name']}_{p['coord'][0]}_{p['coord'][1]}.jpg"
         plt.savefig(os.path.join(rejected_plot_dir, save_name), bbox_inches='tight', dpi=100)
         plt.close(fig)
         
-    print("Analysis complete.")
+    print("Test, Ablation, and Histogram generation complete.")
