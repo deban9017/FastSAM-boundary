@@ -8,6 +8,9 @@ test/
 train_masks/
 val_masks/
 dat_patch/
+dat/
+HQSeg_res/
+dis5k_plots/
 
 
 
