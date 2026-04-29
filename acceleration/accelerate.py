@@ -19,6 +19,17 @@ Opt Bench: 100%|█████████████████████�
 Average Batched Optimized Time per image: 0.2491 seconds
 True Speedup vs Unoptimized: 1.05x
 
+CPU timing Output:
+
+Total boundary patches to process: 15
+
+--- Running CPU Pipeline (Batched) for 50 iterations ---
+CPU Bench: 100%|███████████████████████████████████████████████████████████████████| 50/50 [01:30<00:00,  1.82s/it]
+
+======================================
+Average CPU Inference Time: 1.8164 seconds
+======================================
+
 """
 
 

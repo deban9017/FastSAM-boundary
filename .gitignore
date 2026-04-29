@@ -1,5 +1,6 @@
 # model weights
 *.pt
+*.onnx
 
 # datasets
 train/
@@ -16,5 +17,6 @@ val_old/
 val_masks_old/
 test_masks/
 rejected_test_patches/
+
 
 
