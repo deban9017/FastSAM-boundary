@@ -11,6 +11,7 @@ dat_patch/
 dat/
 HQSeg_res/
 dis5k_plots/
+rejected_patches_plots/
 
 
 
