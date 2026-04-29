@@ -1,3 +1,22 @@
+"""
+OUTPUT:
+
+==================================================
+TOP 90% PATCH-LEVEL QUANTITATIVE EVALUATION (DIS5K)
+Total Validated: 2154 | Kept: 1939 | Rejected Outliers: 215
+==================================================
+FastSAM Baseline Patch Global IoU:   0.9443
+Refined Model Patch Global IoU:      0.9568
+--------------------------------------------------
+FastSAM Baseline Patch Boundary IoU: 0.6146
+Refined Model Patch Boundary IoU:    0.6906
+==================================================
+
+Saving 215 actual failure plots to .\rejected_patches_plots...
+Plotting Failures: 100%|███████████████████████████████████████████████████████████████| 215/215 [00:42<00:00,  5.05it/s]
+Analysis complete.
+"""
+
 import os
 import cv2
 import numpy as np
@@ -13,20 +32,21 @@ cv2.setNumThreads(0)
 # EVALUATION METHODOLOGY & OUTLIER REJECTION
 #
 # 1. Why Global Evaluation Failed: FastSAM frequently suffers from severe 
-#    topological hallucinations on 5K images (e.g., missing entire objects). 
-#    A local boundary refiner cannot fix massive missing regions.
+#    topological hallucinations on high-res 5K images. A local boundary refiner 
+#    is designed to snap contours to nearby gradients, not hallucinate missing parts.
 #
 # 2. Strict Patch Validation: We only evaluate 256x256 patches where FastSAM 
-#    was reasonably successful, defined as:
-#    - Distance Check: Max GT boundary distance to FastSAM boundary <= 50 pixels.
+#    provided a reasonable initialization. A valid patch must pass:
 #    - Coverage Check: Area difference inside the patch <= 10%.
+#    - Distance Check: Max GT boundary distance to FastSAM boundary <= 50 pixels.
+#    - Initialization Check (NEW): FastSAM's baseline Boundary IoU must be >= 20%. 
+#      If it's lower, the predicted contour is completely disjointed, violating 
+#      our core assumption that the Puller has a rough edge to start from.
 #
-# 3. Bottom 10% Rejection & Analysis: Even within "valid" patches, there are 
-#    extreme edge cases (e.g., pure black shadows, heavy blur, or ambiguous 
-#    textures) where no true gradient exists for the Boundary Puller to use. 
-#    We sort all patches by the refined model's Boundary IoU, reject the bottom 
-#    10% as unrefinable outliers, calculate metrics on the top 90%, and plot 
-#    the rejected patches for visual failure-mode analysis.
+# 3. Bottom 10% Rejection & Analysis: We sort all validated patches by the 
+#    refined model's Boundary IoU, reject the bottom 10% as unrefinable outliers 
+#    (e.g., pure black shadows, heavy blur), calculate metrics on the top 90%, 
+#    and plot the rejected patches for visual failure-mode analysis.
 # ==============================================================================
 
 # ==========================================
@@ -126,7 +146,12 @@ class ValidImagePatchDataset(Dataset):
             if abs(float(fs_crop.sum()) - float(gt_crop.sum())) / float(patch_area) > 0.10:
                 continue
                 
-            # --- Check 2: Distance Threshold (<= 50px) ---
+            # --- Check 2: Initialization Floor (>= 20% Boundary IoU) ---
+            # FastSAM must give us a workable rough edge, not disjointed noise.
+            if boundary_iou(gt_crop, fs_crop) < 0.20:
+                continue
+                
+            # --- Check 3: Distance Threshold (<= 50px) ---
             fs_bound = cv2.dilate(fs_crop, kernel) - cv2.erode(fs_crop, kernel)
             gt_bound = cv2.dilate(gt_crop, kernel) - cv2.erode(gt_crop, kernel)
             
@@ -229,7 +254,6 @@ if __name__ == '__main__':
                 fs_np = fs_t.numpy().squeeze(1).astype(np.uint8)
                 gt_np = gt_t.numpy() 
                 
-                # Store data for every single patch
                 for i in range(len(imgs_t)):
                     fs_g = compute_global_iou(gt_np[i], fs_np[i])
                     fs_b = boundary_iou(gt_np[i], fs_np[i])
@@ -252,7 +276,6 @@ if __name__ == '__main__':
     # ==========================================
     # 5. SORT, SPLIT & PLOT
     # ==========================================
-    # Sort by refined Boundary IoU to find the worst performing patches
     all_patch_results.sort(key=lambda x: x['m2_b'])
     
     total_patches = len(all_patch_results)
@@ -261,7 +284,6 @@ if __name__ == '__main__':
     rejected_patches = all_patch_results[:split_idx]
     kept_patches = all_patch_results[split_idx:]
     
-    # Calculate Final Metrics on Top 90%
     fs_g_mean = np.mean([p['fs_g'] for p in kept_patches])
     fs_b_mean = np.mean([p['fs_b'] for p in kept_patches])
     m2_g_mean = np.mean([p['m2_g'] for p in kept_patches])
@@ -269,7 +291,7 @@ if __name__ == '__main__':
 
     print("\n" + "="*50)
     print("TOP 90% PATCH-LEVEL QUANTITATIVE EVALUATION (DIS5K)")
-    print(f"Total Evaluated: {total_patches} | Kept: {len(kept_patches)} | Rejected: {len(rejected_patches)}")
+    print(f"Total Validated: {total_patches} | Kept: {len(kept_patches)} | Rejected Outliers: {len(rejected_patches)}")
     print("="*50)
     print(f"FastSAM Baseline Patch Global IoU:   {fs_g_mean:.4f}")
     print(f"Refined Model Patch Global IoU:      {m2_g_mean:.4f}")
@@ -278,8 +300,7 @@ if __name__ == '__main__':
     print(f"Refined Model Patch Boundary IoU:    {m2_b_mean:.4f}")
     print("="*50)
 
-    # Save plots for the rejected bottom 10%
-    print(f"\nSaving {len(rejected_patches)} failure plots to {rejected_plot_dir}...")
+    print(f"\nSaving {len(rejected_patches)} actual failure plots to {rejected_plot_dir}...")
     for idx, p in enumerate(tqdm(rejected_patches, desc="Plotting Failures")):
         fig, axes = plt.subplots(1, 4, figsize=(20, 5))
 
