@@ -4,6 +4,22 @@ OUTPUT:
 Loading ONNX C++ Runtime for CPU...
 
 --- Benchmarking FastSAM ONNX on CPU (50 runs) ---
+FastSAM CPU Bench: 100%|███████████████████████████████████████████████████████████| 50/50 [01:27<00:00,  1.76s/it]
+
+--- Benchmarking Our Unified Model ONNX on CPU (50 runs) ---
+Our Model CPU Bench: 100%|█████████████████████████████████████████████████████████| 50/50 [00:42<00:00,  1.17it/s]
+
+======================================
+Average FastSAM ONNX CPU Inference Time:   1.7599 seconds
+Average Unified ONNX CPU Inference Time:   0.8556 seconds
+======================================
+
+
+Before concatenation, OUTPUT:
+
+Loading ONNX C++ Runtime for CPU...
+
+--- Benchmarking FastSAM ONNX on CPU (50 runs) ---
 FastSAM CPU Bench: 100%|███████████████████████████████████████████████████████████| 50/50 [01:27<00:00,  1.75s/it]
 
 --- Benchmarking Our Model ONNX on CPU (200 runs) ---
@@ -14,6 +30,7 @@ Average FastSAM ONNX CPU Inference Time:   1.7531 seconds
 Average Our Model ONNX CPU Inference Time: 1.0806 seconds
 ======================================
 """
+
 
 import os
 import time
@@ -27,10 +44,9 @@ print("Loading ONNX C++ Runtime for CPU...")
 sess_options = ort.SessionOptions()
 sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
-# Load all three ONNX models
+# Load FastSAM and our new unified pipeline ONNX models
 fastsam_session = ort.InferenceSession("FastSAM-x.onnx", sess_options, providers=['CPUExecutionProvider'])
-puller_session = ort.InferenceSession("puller_opt.onnx", sess_options, providers=['CPUExecutionProvider'])
-smoother_session = ort.InferenceSession("smoother_opt.onnx", sess_options, providers=['CPUExecutionProvider'])
+pipeline_session = ort.InferenceSession("full_pipeline_optcat5.onnx", sess_options, providers=['CPUExecutionProvider'])
 
 img_path = r"D:\sems\AIP\Proj\acceleration\i1.jpg"
 mask_path = r"D:\sems\AIP\Proj\acceleration\m1.png"
@@ -65,7 +81,7 @@ fs_avg_time = (time.time() - t0) / NUM_RUNS_FS
 # ==========================================
 # 2. PREPARE OUR MODEL INPUTS
 # ==========================================
-# Prepare coordinates (same as before)
+# Prepare coordinates
 fs_uint8 = (fs_bin * 255).astype(np.uint8)
 contours, _ = cv2.findContours(fs_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
 
@@ -90,19 +106,18 @@ all_imgs_np = (np.stack(img_crops).astype(np.float32) / 255.0).transpose(0, 3, 1
 all_masks_np = np.stack(mask_crops).reshape(-1, 1, patch_size, patch_size).astype(np.float32)
 
 BATCH_SIZE = 32
-NUM_RUNS_OURS = 200
+NUM_RUNS_OURS = 50
 
 # ==========================================
-# 3. OUR MODEL ONNX BENCHMARK
+# 3. OUR UNIFIED MODEL ONNX BENCHMARK
 # ==========================================
-print(f"\n--- Benchmarking Our Model ONNX on CPU ({NUM_RUNS_OURS} runs) ---")
+print(f"\n--- Benchmarking Our Unified Model ONNX on CPU ({NUM_RUNS_OURS} runs) ---")
 # Warmup
 for _ in range(5):
     for i in range(0, len(coords), BATCH_SIZE):
         batch_img = all_imgs_np[i:i+BATCH_SIZE]
         batch_mask = all_masks_np[i:i+BATCH_SIZE]
-        m1_out = puller_session.run(['output'], {'image': batch_img, 'mask': batch_mask})[0]
-        m2_out = smoother_session.run(['output'], {'image': batch_img, 'mask': (m1_out > 0.5).astype(np.float32)})[0]
+        _ = pipeline_session.run(['output'], {'image': batch_img, 'mask': batch_mask})[0]
 
 t0 = time.time()
 for _ in tqdm(range(NUM_RUNS_OURS), desc="Our Model CPU Bench"):
@@ -113,16 +128,9 @@ for _ in tqdm(range(NUM_RUNS_OURS), desc="Our Model CPU Bench"):
         batch_img = all_imgs_np[i:i+BATCH_SIZE]
         batch_mask = all_masks_np[i:i+BATCH_SIZE]
         
-        # 1. Run Puller ONNX
-        puller_inputs = {'image': batch_img, 'mask': batch_mask}
-        m1_out = puller_session.run(['output'], puller_inputs)[0]
-        
-        # Threshold
-        m1_bin = (m1_out > 0.5).astype(np.float32)
-        
-        # 2. Run Smoother ONNX
-        smoother_inputs = {'image': batch_img, 'mask': m1_bin}
-        m2_out = smoother_session.run(['output'], smoother_inputs)[0]
+        # Run the single fused pipeline
+        inputs = {'image': batch_img, 'mask': batch_mask}
+        m2_out = pipeline_session.run(['output'], inputs)[0]
         
         pred_patches = np.squeeze(m2_out, axis=1)
         
@@ -137,5 +145,5 @@ our_avg_time = our_total_time / NUM_RUNS_OURS
 
 print(f"\n======================================")
 print(f"Average FastSAM ONNX CPU Inference Time:   {fs_avg_time:.4f} seconds")
-print(f"Average Our Model ONNX CPU Inference Time: {our_avg_time:.4f} seconds")
+print(f"Average Unified ONNX CPU Inference Time:   {our_avg_time:.4f} seconds")
 print(f"======================================")
