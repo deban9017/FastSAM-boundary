@@ -1,6 +1,7 @@
 """
 OUTPUT:
 
+SA-1B dataset patches loaded: 2399
 Starting evaluation on 2399 perfectly cropped test patches...
 Evaluating: 100%|████████████████████████████████████████████████████████████████████████| 75/75 [02:49<00:00,  2.26s/it]
 
